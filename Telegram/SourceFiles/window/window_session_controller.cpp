@@ -78,6 +78,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/file_utilities.h"
 #include "core/ui_integration.h"
 #include "base/options.h"
+#include "base/timer.h"
 #include "base/unixtime.h"
 #include "info/channel_statistics/earn/earn_icons.h"
 #include "ui/controls/userpic_button.h"
@@ -129,9 +130,51 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 #include "styles/style_dialogs.h"
 #include "styles/style_layers.h" // st::boxLabel
+#include "ui/widgets/buttons.h"
+#include "ui/widgets/labels.h"
 
 namespace Window {
 namespace {
+
+// Friction gate: the archive is only reachable after an unskippable
+// countdown. Confirming unlocks it for a short grace window, so backing out
+// and straight back in doesn't repeat the wait.
+constexpr auto kArchiveFrictionSeconds = 15;
+constexpr auto kArchiveGrace = 60 * crl::time(1000);
+auto ArchiveUnlockedUntil = crl::time(0);
+
+void ArchiveFrictionBox(not_null<Ui::GenericBox*> box, Fn<void()> open) {
+	box->setTitle(rpl::single(u"Archived chats"_q));
+	const auto label = box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		rpl::single(QString()),
+		st::boxLabel));
+	const auto left = box->lifetime().make_state<int>(
+		kArchiveFrictionSeconds);
+	const auto timer = box->lifetime().make_state<base::Timer>();
+	const auto button = box->addButton(rpl::single(u"Open"_q), [=] {
+		ArchiveUnlockedUntil = crl::now() + kArchiveGrace;
+		box->closeBox();
+		open();
+	});
+	box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+	button->setDisabled(true);
+	const auto tick = [=] {
+		if (*left > 0) {
+			label->setText(u"Wait %1s\u2026"_q.arg(*left));
+		} else {
+			label->setText(u"Still want to?"_q);
+			if (button) {
+				button->setDisabled(false);
+			}
+			timer->cancel();
+		}
+		--*left;
+	};
+	timer->setCallback(tick);
+	tick();
+	timer->callEach(crl::time(1000));
+}
 
 constexpr auto kCustomThemesInMemory = 5;
 constexpr auto kMaxChatEntryHistorySize = 50;
@@ -2086,6 +2129,16 @@ bool SessionController::openFolderInDifferentWindow(
 }
 
 void SessionController::openFolder(not_null<Data::Folder*> folder) {
+	if (folder->id() == Data::Folder::kId
+		&& crl::now() >= ArchiveUnlockedUntil) {
+		const auto weak = base::make_weak(this);
+		uiShow()->show(Box(ArchiveFrictionBox, [=] {
+			if (const auto strong = weak.get()) {
+				strong->openFolder(folder);
+			}
+		}));
+		return;
+	}
 	if (openFolderInDifferentWindow(folder)) {
 		return;
 	} else if (_openedFolder.current() != folder) {
