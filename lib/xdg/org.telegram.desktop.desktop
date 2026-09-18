@@ -1,5 +1,5 @@
 [Desktop Entry]
-Name=Telegram
+Name=FoxGram
 Comment=New era of messaging
 TryExec=Telegram
 Exec=Telegram -- %U
